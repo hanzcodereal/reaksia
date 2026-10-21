@@ -33,8 +33,15 @@ interface ApiRes {
   };
 }
 
+type StreamEvent =
+  | { type: 'attempt'; key: string; index: number; total: number }
+  | { type: 'fail'; key: string; index: number; total: number; error: string }
+  | { type: 'success'; key: string; index: number; total: number; result: ApiRes }
+  | { type: 'done'; result: ApiRes };
+
 const QUICK = ['👍', '❤️', '🔥', '💦', '😂', '🎉', '😮', '😢', '🙏', '👏'];
 const MAX_EMOJI = 5;
+const EMOJI_ONLY = /^\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?$/u;
 
 export default function Page() {
   const [url, setUrl] = useState('');
@@ -74,16 +81,44 @@ export default function Page() {
   const combinedEmoji = (() => {
     const parts = [...selected];
     if (manual.trim()) parts.push(manual.trim());
-    return parts.join(' ');
+    return parts.join(',');
   })();
+
+  const validateManual = (val: string): string | null => {
+    if (!val.trim()) return null;
+    const parts = val.split(',').map((s) => s.trim());
+    if (parts.some((p) => p.length === 0)) {
+      return 'ada koma kosong. contoh: 😀,😎,🔥';
+    }
+    for (const p of parts) {
+      if (!EMOJI_ONLY.test(p)) {
+        return `"${p}" bukan 1 emoji. pisahkan dengan koma. contoh: 😀,😎`;
+      }
+    }
+    return null;
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
+
+    const manualErr = validateManual(manual);
+    if (manualErr) {
+      push('err', manualErr);
+      return;
+    }
+
     if (!combinedEmoji) {
       push('err', 'pilih minimal 1 emoji.');
       return;
     }
+
+    const totalCount = combinedEmoji.split(',').length;
+    if (totalCount > MAX_EMOJI) {
+      push('err', `max ${MAX_EMOJI} emoji (sekarang ${totalCount}).`);
+      return;
+    }
+
     setLoading(true);
     push('cmd', `$ react ${combinedEmoji}`);
 
@@ -93,30 +128,54 @@ export default function Page() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, emoji: combinedEmoji })
       });
-      const data: ApiRes = await res.json();
 
-      if (data.attempts) {
-        for (const a of data.attempts) {
-          if (a.ok) {
-            push('ok', `✔ ${a.key}`);
-          } else {
-            push('err', `✖ ${a.key} → ${a.error ?? 'gagal'}`);
+      if (!res.body) throw new Error('no stream');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let ev: StreamEvent;
+          try {
+            ev = JSON.parse(trimmed);
+          } catch {
+            continue;
+          }
+
+          if (ev.type === 'attempt') {
+            push('info', `→ coba ${ev.index}/${ev.total} ${ev.key}`);
+          } else if (ev.type === 'fail') {
+            push('err', `✖ ${ev.key} → ${ev.error}`);
+          } else if (ev.type === 'success') {
+            push('ok', `✔ ${ev.key}`);
+            const r = ev.result;
+            push('ok', `selesai ${r.time ?? '?'}`);
+            if (r.data) {
+              push(
+                'info',
+                `point ${r.data.points_remaining ?? 'n/a'} · ${r.data.vip_package}`
+              );
+            }
+            setOk((n) => n + 1);
+          } else if (ev.type === 'done') {
+            const r = ev.result;
+            if (!r.status) {
+              push('err', r.error ?? 'semua key gagal');
+              setFail((n) => n + 1);
+            }
           }
         }
-      }
-
-      if (data.status) {
-        push('ok', `selesai ${data.time}`);
-        if (data.data) {
-          push(
-            'info',
-            `point ${data.data.points_remaining ?? 'n/a'} · ${data.data.vip_package}`
-          );
-        }
-        setOk((n) => n + 1);
-      } else {
-        push('err', data.error ?? 'semua key gagal');
-        setFail((n) => n + 1);
       }
     } catch {
       push('err', '✖ koneksi gagal');
@@ -132,6 +191,8 @@ export default function Page() {
     err: 'text-red-400',
     cmd: 'text-neon'
   };
+
+  const totalCount = combinedEmoji ? combinedEmoji.split(',').length : 0;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
@@ -165,8 +226,13 @@ export default function Page() {
                 <span className="font-mono text-xs uppercase tracking-widest text-neutral-500">
                   emoji
                 </span>
-                <span className="font-mono text-xs text-neutral-500">
-                  {selected.length}/{MAX_EMOJI}
+                <span
+                  className={
+                    'font-mono text-xs ' +
+                    (totalCount > MAX_EMOJI ? 'text-red-400' : 'text-neutral-500')
+                  }
+                >
+                  {totalCount}/{MAX_EMOJI}
                 </span>
               </div>
 
@@ -195,7 +261,7 @@ export default function Page() {
                 type="text"
                 value={manual}
                 onChange={(e) => setManual(e.target.value)}
-                placeholder="atau ketik emoji manual (opsional)"
+                placeholder="ketik manual: 😀,😎,🔥 (wajib koma)"
                 className="mt-2 w-full rounded-xl border border-edge bg-ink px-4 py-3 font-mono text-sm text-neutral-200 outline-none focus:border-acid/60"
               />
 
@@ -260,4 +326,4 @@ export default function Page() {
       </footer>
     </main>
   );
-                                       }
+}

@@ -44,6 +44,12 @@ export interface ReactResult {
   };
 }
 
+export type StreamEvent =
+  | { type: 'attempt'; key: string; index: number; total: number }
+  | { type: 'fail'; key: string; index: number; total: number; error: string }
+  | { type: 'success'; key: string; index: number; total: number; result: ReactResult }
+  | { type: 'done'; result: ReactResult };
+
 export function normalizeUrl(inputUrl: string): string | null {
   const match = String(inputUrl || '').match(LINK_REGEX);
   if (!match) return null;
@@ -51,9 +57,24 @@ export function normalizeUrl(inputUrl: string): string | null {
 }
 
 export function parseEmojis(inputEmoji: string): string | null {
-  const matches = String(inputEmoji || '').match(EMOJI_REGEX);
-  if (!matches || matches.length === 0) return null;
-  return matches.slice(0, 5).join(', ');
+  const raw = String(inputEmoji || '').trim();
+  if (!raw) return null;
+
+  const parts = raw.split(',').map((s) => s.trim());
+  if (parts.some((p) => p.length === 0)) return null;
+
+  const emojis: string[] = [];
+  for (const part of parts) {
+    const matches = part.match(EMOJI_REGEX);
+    if (!matches) return null;
+    const uniq = Array.from(new Set(matches));
+    if (uniq.length !== 1) return null;
+    if (part.replace(EMOJI_REGEX, '').trim().length > 0) return null;
+    emojis.push(uniq[0]);
+  }
+
+  if (emojis.length > 5) return null;
+  return emojis.join(', ');
 }
 
 export async function generateVipApiKey(
@@ -103,7 +124,10 @@ export async function syncVipKeys(): Promise<VipKey[] | null> {
 
     const freshKeys: VipKey[] = [];
     for (const [name, val] of Object.entries(
-      dbRes.data as Record<string, { active?: boolean; domain?: string; apiKey?: string }>
+      dbRes.data as Record<
+        string,
+        { active?: boolean; domain?: string; apiKey?: string }
+      >
     )) {
       if (!val || val.active === false) continue;
 
@@ -168,45 +192,60 @@ async function sendReactionRequest(
   return response.data;
 }
 
-export async function react(
+export async function* reactStream(
   targetUrl: string,
   reactionInput: string,
   keys?: VipKey[]
-): Promise<ReactResult> {
+): AsyncGenerator<StreamEvent> {
   const startTime = Date.now();
 
   const normalizedUrl = normalizeUrl(targetUrl);
   if (!normalizedUrl) {
-    return {
-      time: `${Date.now() - startTime}ms`,
-      status: false,
-      error: 'URL channel tidak valid.'
+    yield {
+      type: 'done',
+      result: {
+        time: `${Date.now() - startTime}ms`,
+        status: false,
+        error: 'URL channel tidak valid.'
+      }
     };
+    return;
   }
 
   const emojiString = parseEmojis(reactionInput);
   if (!emojiString) {
-    return {
-      time: `${Date.now() - startTime}ms`,
-      status: false,
-      error: 'Emoji tidak valid.'
+    yield {
+      type: 'done',
+      result: {
+        time: `${Date.now() - startTime}ms`,
+        status: false,
+        error: 'Emoji tidak valid. pisahkan dengan koma. contoh: 😀,😎,🔥'
+      }
     };
+    return;
   }
 
-  const pool =
-    keys && keys.length > 0 ? keys : await getKeys();
+  const pool = keys && keys.length > 0 ? keys : await getKeys();
   if (!pool || pool.length === 0) {
-    return {
-      time: `${Date.now() - startTime}ms`,
-      status: false,
-      error: 'Tidak ada API key tersedia.'
+    yield {
+      type: 'done',
+      result: {
+        time: `${Date.now() - startTime}ms`,
+        status: false,
+        error: 'Tidak ada API key tersedia.'
+      }
     };
+    return;
   }
 
   const attemptsLog: KeyAttempt[] = [];
 
   for (let i = 0; i < pool.length; i++) {
     const currentKey = pool[(keyIndex + i) % pool.length];
+    const idx = i + 1;
+    const total = pool.length;
+
+    yield { type: 'attempt', key: currentKey.name, index: idx, total };
 
     try {
       const result = await sendReactionRequest(
@@ -222,7 +261,7 @@ export async function react(
         attemptsLog.push({ key: currentKey.name, ok: true });
         keyIndex = (keyIndex + i + 1) % pool.length;
 
-        return {
+        const finalResult: ReactResult = {
           time: `${Date.now() - startTime}ms`,
           status: true,
           message: result.message || 'Reaction masuk antrean.',
@@ -239,33 +278,70 @@ export async function react(
                 : null
           }
         };
+
+        yield {
+          type: 'success',
+          key: currentKey.name,
+          index: idx,
+          total,
+          result: finalResult
+        };
+        yield { type: 'done', result: finalResult };
+        return;
       }
 
-      attemptsLog.push({
+      const errMsg = (result && result.error) || 'gagal tanpa pesan';
+      attemptsLog.push({ key: currentKey.name, ok: false, error: errMsg });
+      yield {
+        type: 'fail',
         key: currentKey.name,
-        ok: false,
-        error: (result && result.error) || 'gagal tanpa pesan'
-      });
+        index: idx,
+        total,
+        error: errMsg
+      };
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { error?: string } };
         message?: string;
       };
       const errData = axiosErr.response && axiosErr.response.data;
-      attemptsLog.push({
+      const errMsg = errData?.error || axiosErr.message || 'Server error.';
+
+      attemptsLog.push({ key: currentKey.name, ok: false, error: errMsg });
+      yield {
+        type: 'fail',
         key: currentKey.name,
-        ok: false,
-        error: errData?.error || axiosErr.message || 'Server error.'
-      });
+        index: idx,
+        total,
+        error: errMsg
+      };
     }
   }
 
   keyIndex = (keyIndex + 1) % pool.length;
 
-  return {
-    time: `${Date.now() - startTime}ms`,
-    status: false,
-    error: `Semua ${pool.length} API key gagal.`,
-    attempts: attemptsLog
+  yield {
+    type: 'done',
+    result: {
+      time: `${Date.now() - startTime}ms`,
+      status: false,
+      error: `Semua ${pool.length} API key gagal.`,
+      attempts: attemptsLog
+    }
   };
 }
+
+export async function react(
+  targetUrl: string,
+  reactionInput: string,
+  keys?: VipKey[]
+): Promise<ReactResult> {
+  for await (const ev of reactStream(targetUrl, reactionInput, keys)) {
+    if (ev.type === 'done') return ev.result;
+  }
+  return {
+    time: '0ms',
+    status: false,
+    error: 'unknown'
+  };
+  }

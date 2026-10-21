@@ -26,11 +26,13 @@ interface ApiRes {
   };
 }
 
-const QUICK = ['👍', '❤️', '🔥', '💦', '😂', '🎉'];
+const QUICK = ['👍', '❤️', '🔥', '💦', '😂', '🎉', '😮', '😢', '🙏', '👏'];
+const MAX_EMOJI = 5;
 
 export default function Page() {
   const [url, setUrl] = useState('');
-  const [emoji, setEmoji] = useState('👍');
+  const [selected, setSelected] = useState<string[]>(['👍']);
+  const [manual, setManual] = useState('');
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<Line[]>([]);
   const [ok, setOk] = useState(0);
@@ -51,17 +53,40 @@ export default function Page() {
     if (term.current) term.current.scrollTop = term.current.scrollHeight;
   }, [logs]);
 
+  const toggleEmoji = (em: string) => {
+    setSelected((prev) => {
+      if (prev.includes(em)) {
+        return prev.filter((x) => x !== em);
+      }
+      if (prev.length >= MAX_EMOJI) {
+        push('err', `max ${MAX_EMOJI} emoji.`);
+        return prev;
+      }
+      return [...prev, em];
+    });
+  };
+
+  const combinedEmoji = (() => {
+    const parts = [...selected];
+    if (manual.trim()) parts.push(manual.trim());
+    return parts.join(' ');
+  })();
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
+    if (!combinedEmoji) {
+      push('err', 'pilih minimal 1 emoji.');
+      return;
+    }
     setLoading(true);
-    push('cmd', `$ react ${emoji}`);
+    push('cmd', `$ react ${combinedEmoji}`);
 
     try {
       const res = await fetch('/api/react', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, emoji })
+        body: JSON.stringify({ url, emoji: combinedEmoji })
       });
       const data: ApiRes = await res.json();
 
@@ -119,25 +144,53 @@ export default function Page() {
               className="w-full rounded-xl border border-edge bg-ink px-4 py-3 font-mono text-sm text-neutral-200 outline-none focus:border-acid/60"
               required
             />
-            <div className="flex flex-wrap gap-2">
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+                  emoji
+                </span>
+                <span className="font-mono text-xs text-neutral-500">
+                  {selected.length}/{MAX_EMOJI}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-5 gap-2 sm:grid-cols-10">
+                {QUICK.map((em) => {
+                  const active = selected.includes(em);
+                  return (
+                    <button
+                      key={em}
+                      type="button"
+                      onClick={() => toggleEmoji(em)}
+                      className={
+                        'aspect-square rounded-xl border text-xl transition ' +
+                        (active
+                          ? 'border-acid bg-acid/10 text-acid'
+                          : 'border-edge bg-ink hover:border-acid/50')
+                      }
+                    >
+                      {em}
+                    </button>
+                  );
+                })}
+              </div>
+
               <input
                 type="text"
-                value={emoji}
-                onChange={(e) => setEmoji(e.target.value)}
-                className="min-w-0 flex-1 rounded-xl border border-edge bg-ink px-4 py-3 font-mono text-sm text-neutral-200 outline-none focus:border-acid/60"
-                required
+                value={manual}
+                onChange={(e) => setManual(e.target.value)}
+                placeholder="atau ketik emoji manual (opsional)"
+                className="mt-2 w-full rounded-xl border border-edge bg-ink px-4 py-3 font-mono text-sm text-neutral-200 outline-none focus:border-acid/60"
               />
-              {QUICK.map((em) => (
-                <button
-                  key={em}
-                  type="button"
-                  onClick={() => setEmoji(em)}
-                  className="rounded-xl border border-edge bg-ink px-3 py-3 text-lg transition hover:border-acid/50"
-                >
-                  {em}
-                </button>
-              ))}
+
+              {combinedEmoji && (
+                <p className="mt-2 break-all font-mono text-xs text-neutral-500">
+                  target: <span className="text-neutral-300">{combinedEmoji}</span>
+                </p>
+              )}
             </div>
+
             <button
               type="submit"
               disabled={loading}
@@ -186,10 +239,10 @@ export default function Page() {
 
       <footer className="mt-10 flex items-center justify-between border-t border-edge pt-5 font-mono text-xs text-neutral-600">
         <span>
-          by <span className="text-acid">Hanzz</span>
+          by <span className="text-acid">Hanzz Forum Grupp</span>
         </span>
         <span>Reaksia v1</span>
       </footer>
     </main>
   );
-}
+    }

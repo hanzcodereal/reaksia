@@ -11,11 +11,18 @@ interface Line {
   text: string;
 }
 
+interface KeyAttempt {
+  key: string;
+  ok: boolean;
+  error?: string;
+}
+
 interface ApiRes {
   time?: string;
   status: boolean;
   message?: string;
   error?: string;
+  attempts?: KeyAttempt[];
   data?: {
     task_id: string | null;
     target: string;
@@ -55,9 +62,7 @@ export default function Page() {
 
   const toggleEmoji = (em: string) => {
     setSelected((prev) => {
-      if (prev.includes(em)) {
-        return prev.filter((x) => x !== em);
-      }
+      if (prev.includes(em)) return prev.filter((x) => x !== em);
       if (prev.length >= MAX_EMOJI) {
         push('err', `max ${MAX_EMOJI} emoji.`);
         return prev;
@@ -90,17 +95,27 @@ export default function Page() {
       });
       const data: ApiRes = await res.json();
 
+      if (data.attempts) {
+        for (const a of data.attempts) {
+          if (a.ok) {
+            push('ok', `✔ ${a.key}`);
+          } else {
+            push('err', `✖ ${a.key} → ${a.error ?? 'gagal'}`);
+          }
+        }
+      }
+
       if (data.status) {
-        push('ok', `✔ ${data.time}`);
+        push('ok', `selesai ${data.time}`);
         if (data.data) {
           push(
             'info',
-            `key ${data.data.vip_key} · point ${data.data.points_remaining ?? 'n/a'}`
+            `point ${data.data.points_remaining ?? 'n/a'} · ${data.data.vip_package}`
           );
         }
         setOk((n) => n + 1);
       } else {
-        push('err', `✖ ${data.error ?? 'gagal'}`);
+        push('err', data.error ?? 'semua key gagal');
         setFail((n) => n + 1);
       }
     } catch {
@@ -245,4 +260,4 @@ export default function Page() {
       </footer>
     </main>
   );
-    }
+                                       }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { react, syncVipKeys } from '@/lib/rch';
+import { reactStream, syncVipKeys } from '@/lib/rch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,8 +19,36 @@ export async function POST(req: NextRequest) {
       await syncVipKeys();
     }
 
-    const result = await react(String(url), String(emoji));
-    return NextResponse.json(result, { status: result.status ? 200 : 400 });
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const ev of reactStream(String(url), String(emoji))) {
+            controller.enqueue(encoder.encode(JSON.stringify(ev) + '\n'));
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Unknown';
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                type: 'done',
+                result: { time: '0ms', status: false, error: message }
+              }) + '\n'
+            )
+          );
+        } finally {
+          controller.close();
+        }
+      }
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no'
+      }
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown';
     return NextResponse.json(
@@ -37,4 +65,4 @@ export async function GET() {
     count: keys ? keys.length : 0,
     keys: keys || []
   });
-}
+                         }

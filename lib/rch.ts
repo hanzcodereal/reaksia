@@ -6,11 +6,18 @@ const LINK_REGEX =
   /(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/([A-Za-z0-9_-]+)\/(\d+)/i;
 const EMOJI_REGEX = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?/gu;
 
+export interface KeyAttempt {
+  key: string;
+  ok: boolean;
+  error?: string;
+}
+
 export interface ReactResult {
   time: string;
   status: boolean;
   message?: string;
   error?: string;
+  attempts?: KeyAttempt[];
   data?: {
     task_id: string | null;
     target: string;
@@ -89,12 +96,10 @@ export async function react(
   }
 
   const pool = keys.length > 0 ? keys : DEFAULT_VIP_KEYS;
-  let attempts = 0;
-  let lastError = 'Semua VIP key limit / sibuk.';
+  const attemptsLog: KeyAttempt[] = [];
 
-  while (attempts < pool.length) {
-    const currentKey = pool[keyIndex % pool.length];
-    keyIndex = (keyIndex + 1) % pool.length;
+  for (let i = 0; i < pool.length; i++) {
+    const currentKey = pool[(keyIndex + i) % pool.length];
 
     try {
       const result = await sendReactionRequest(
@@ -107,10 +112,14 @@ export async function react(
         const task = (result.data && result.data.task) || {};
         const vipInfo = (result.data && result.data.vip) || {};
 
+        attemptsLog.push({ key: currentKey.name, ok: true });
+        keyIndex = (keyIndex + i + 1) % pool.length;
+
         return {
           time: `${Date.now() - startTime}ms`,
           status: true,
           message: result.message || 'Reaction masuk antrean.',
+          attempts: attemptsLog,
           data: {
             task_id: task.key_id || null,
             target: normalizedUrl,
@@ -125,22 +134,31 @@ export async function react(
         };
       }
 
-      if (result && result.error) lastError = result.error;
+      attemptsLog.push({
+        key: currentKey.name,
+        ok: false,
+        error: (result && result.error) || 'gagal tanpa pesan'
+      });
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { error?: string } };
         message?: string;
       };
       const errData = axiosErr.response && axiosErr.response.data;
-      lastError = errData?.error || axiosErr.message || 'Server error.';
+      attemptsLog.push({
+        key: currentKey.name,
+        ok: false,
+        error: errData?.error || axiosErr.message || 'Server error.'
+      });
     }
-
-    attempts++;
   }
+
+  keyIndex = (keyIndex + 1) % pool.length;
 
   return {
     time: `${Date.now() - startTime}ms`,
     status: false,
-    error: lastError
+    error: `Semua ${pool.length} API key gagal.`,
+    attempts: attemptsLog
   };
-  }
+}
